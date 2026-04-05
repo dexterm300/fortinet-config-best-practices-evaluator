@@ -1,0 +1,500 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Fortinet Configuration Evaluator - CIS Benchmarks</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg-primary: #0f172a;
+            --bg-secondary: #1e293b;
+            --bg-tertiary: #334155;
+            --text-primary: #f8fafc;
+            --text-secondary: #94a3b8;
+            --accent-primary: #3b82f6;
+            --success: #10b981;
+            --success-bg: rgba(16, 185, 129, 0.1);
+            --warning: #f59e0b;
+            --danger: #ef4444;
+            --danger-bg: rgba(239, 68, 68, 0.1);
+            --border: #334155;
+            --glow: rgba(59, 130, 246, 0.5);
+            --font-main: 'Inter', sans-serif;
+        }
+
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+
+        body {
+            background-color: var(--bg-primary);
+            color: var(--text-primary);
+            font-family: var(--font-main);
+            line-height: 1.5;
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: flex-start;
+            padding: 2rem;
+        }
+
+        .app-container {
+            width: 100%;
+            max-width: 800px;
+            background: var(--bg-secondary);
+            border-radius: 20px;
+            box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5), 0 0 0 1px var(--border);
+            padding: 2.5rem;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .app-container::before {
+            content: '';
+            position: absolute;
+            top: 0; left: 0; right: 0;
+            height: 4px;
+            background: linear-gradient(90deg, #3b82f6, #ec4899);
+        }
+
+        header { text-align: center; margin-bottom: 2.5rem; }
+
+        .logo-area {
+            display: flex; align-items: center; justify-content: center;
+            gap: 12px; margin-bottom: 8px; color: var(--accent-primary);
+        }
+
+        h1 { font-size: 1.75rem; font-weight: 700; color: var(--text-primary); letter-spacing: -0.025em; }
+        .subtitle { color: var(--text-secondary); font-size: 1rem; }
+
+        .drop-zone {
+            border: 2px dashed var(--border);
+            border-radius: 16px; padding: 4rem 2rem;
+            text-align: center; cursor: pointer;
+            transition: all 0.3s ease;
+            background: rgba(30, 41, 59, 0.5);
+            margin-bottom: 2rem;
+        }
+
+        .drop-zone:hover, .drop-zone.drag-active {
+            border-color: var(--accent-primary);
+            background: rgba(59, 130, 246, 0.05);
+            box-shadow: 0 0 20px var(--glow);
+        }
+
+        .upload-icon { width: 48px; height: 48px; color: var(--accent-primary); margin-bottom: 1rem; }
+
+        .hidden { display: none !important; }
+
+        .results-section { animation: fadeIn 0.5s ease-out; }
+
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        .score-card {
+            display: flex; align-items: center; gap: 2rem;
+            background: var(--bg-tertiary);
+            border-radius: 16px; padding: 2rem; margin-bottom: 2rem;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+        }
+
+        .score-circle {
+            width: 100px; height: 100px; border-radius: 50%;
+            background: conic-gradient(var(--accent-primary) var(--progress, 0%), var(--bg-secondary) 0%);
+            display: flex; justify-content: center; align-items: center;
+            font-size: 2rem; font-weight: 700; position: relative;
+            box-shadow: 0 0 15px rgba(0,0,0,0.3);
+        }
+
+        .score-circle::before {
+            content: ''; position: absolute; inset: 6px;
+            background: var(--bg-tertiary); border-radius: 50%; z-index: 1;
+        }
+
+        .score-circle > span { position: relative; z-index: 2; }
+        #score-value { color: var(--text-primary); }
+        .score-divider { font-size: 1.5rem; color: var(--text-secondary); margin: 0 2px; }
+        #score-total { font-size: 1.25rem; color: var(--text-secondary); }
+
+        .score-details h3 { margin-bottom: 0.5rem; font-size: 1.25rem; }
+        .score-details p { color: var(--text-secondary); }
+
+        .findings-header {
+            display: flex; justify-content: space-between; align-items: center;
+            margin-bottom: 1.5rem;
+        }
+
+        .filter-controls {
+            display: flex; gap: 0.5rem; background: var(--bg-tertiary);
+            padding: 4px; border-radius: 8px;
+        }
+
+        .filter-btn {
+            background: transparent; border: none; color: var(--text-secondary);
+            padding: 6px 12px; border-radius: 6px; cursor: pointer;
+            font-size: 0.875rem; font-family: inherit; transition: all 0.2s;
+        }
+
+        .filter-btn.active {
+            background: var(--bg-secondary); color: var(--text-primary);
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+
+        .findings-list { list-style: none; display: flex; flex-direction: column; gap: 1rem; }
+
+        .finding-card {
+            background: var(--bg-tertiary); border-radius: 12px;
+            padding: 1.25rem; border-left: 4px solid var(--border);
+            transition: transform 0.2s;
+        }
+
+        .finding-card.pass { border-left-color: var(--success); }
+        .finding-card.fail { 
+            border-left-color: var(--danger);
+            background: linear-gradient(90deg, rgba(239, 68, 68, 0.05), var(--bg-tertiary) 20%);
+        }
+
+        .finding-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 0.75rem;}
+        .finding-title { font-weight: 600; font-size: 1.05rem; }
+        .status-badge {
+            padding: 4px 8px; border-radius: 4px; font-size: 0.75rem;
+            font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em;
+        }
+        .pass .status-badge { background: var(--success-bg); color: var(--success); }
+        .fail .status-badge { background: var(--danger-bg); color: var(--danger); }
+        .finding-desc { color: var(--text-secondary); font-size: 0.95rem; margin-bottom: 1rem; }
+
+        .remediation-box {
+            background: rgba(0,0,0,0.2); border-radius: 8px;
+            padding: 1rem; margin-top: 1rem; border: 1px solid var(--border);
+        }
+        .remediation-box h4 { font-size: 0.875rem; color: var(--warning); margin-bottom: 0.5rem; display: flex; align-items: center; gap: 6px;}
+        .remediation-code { font-family: monospace; background: #000; padding: 0.75rem; border-radius: 6px; color: #a78bfa; font-size: 0.85rem; white-space: pre-wrap; margin-top: 0.5rem;}
+        footer { margin-top: 3rem; text-align: center; color: var(--text-secondary); font-size: 0.85rem;}
+        .app-controls { text-align: center; margin-top: 2rem; }
+        .btn-restart { background: var(--bg-tertiary); color: var(--text-primary); border: 1px solid var(--border); padding: 0.75rem 1.5rem; border-radius: 8px; font-family: inherit; font-size: 1rem; cursor: pointer; transition: all 0.2s ease;}
+        .btn-restart:hover { background: var(--border); }
+    </style>
+</head>
+<body>
+    <div class="app-container">
+        <header>
+            <div class="logo-area">
+                <svg width="32" height="32" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M12 2L2 7L12 12L22 7L12 2Z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                    <path d="M2 17L12 22L22 17" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                    <path d="M2 12L12 17L22 12" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+                <h1>Fortinet Config Evaluator</h1>
+            </div>
+            <p class="subtitle">CIS Benchmark Analysis (Client-side)</p>
+        </header>
+
+        <main>
+            <div id="drop-zone" class="drop-zone">
+                <div class="drop-content">
+                    <svg class="upload-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12" stroke-linecap="round" stroke-linejoin="round"/>
+                    </svg>
+                    <h2>Drag & Drop Config File</h2>
+                    <p>or click to browse (.conf / .txt)</p>
+                    <input type="file" id="file-input" accept=".conf,.txt" hidden>
+                </div>
+            </div>
+
+            <section id="results-section" class="results-section hidden">
+                <div class="score-card">
+                    <div class="score-circle">
+                        <span id="score-value">0</span>
+                        <span class="score-divider">/</span>
+                        <span id="score-total">8</span>
+                    </div>
+                    <div class="score-details">
+                        <h3>Compliance Score</h3>
+                        <p id="score-message">Evaluating...</p>
+                    </div>
+                </div>
+
+                <div class="findings-container">
+                    <div class="findings-header">
+                        <h3>Detailed Findings</h3>
+                        <div class="filter-controls">
+                            <button class="filter-btn active" data-filter="all">All</button>
+                            <button class="filter-btn" data-filter="fail">Gaps</button>
+                            <button class="filter-btn" data-filter="pass">Passed</button>
+                        </div>
+                    </div>
+                    <ul id="findings-list" class="findings-list"></ul>
+                </div>
+                
+                <div class="app-controls">
+                    <button class="btn-restart" id="btn-restart">Evaluate Another Config</button>
+                </div>
+            </section>
+        </main>
+        
+        <footer>
+            <p>Evaluation run entirely on your local machine. No data is sent to any server.</p>
+        </footer>
+    </div>
+    
+    <script>
+        // --- 1. PARSER ENGINE ---
+        function parseFortiOSConfig(rawText) {
+            const configData = {};
+            let currentContext = null;
+            const lines = rawText.split(/\r?\n/);
+            
+            for(let i=0; i<lines.length; i++) {
+                const line = lines[i].trim();
+                
+                if(line.startsWith("config ")) {
+                    currentContext = line;
+                    if(!configData[currentContext]) {
+                        configData[currentContext] = {};
+                    }
+                } 
+                else if (line === "end") {
+                    currentContext = null;
+                }
+                else if (line.startsWith("set ") && currentContext) {
+                    const parts = line.split(" ");
+                    if (parts.length >= 3) {
+                        const key = parts[1];
+                        let value = parts.slice(2).join(" ");
+                        value = value.replace(/^"/, '').replace(/"$/, '');
+                        configData[currentContext][key] = value;
+                    }
+                }
+            }
+            return configData;
+        }
+
+        // --- 2. CIS BENCHMARK KNOWLEDGE BASE ---
+        const RULES = [
+            {
+                id: "cis-1.1",
+                title: "Ensure Admin Idle Timeout is configured to 5 minutes or less",
+                description: "It is recommended that the admin idle timeout is set to 5 minutes to prevent unauthorized access from an abandoned active session.",
+                evaluate: (parsedConfig) => {
+                    const global = parsedConfig['config system global'];
+                    if (!global || !global['admintimeout']) return false;
+                    const timeout = parseInt(global['admintimeout'], 10);
+                    return timeout <= 5;
+                },
+                remediation: `config system global\n  set admintimeout 5\nend`
+            },
+            {
+                id: "cis-1.2",
+                title: "Ensure Trusted Hosts are configured for administrators",
+                description: "By default, the admin account can log in from any IP. It should be restricted using trusthost configurations.",
+                evaluate: (parsedConfig, rawText) => {
+                    return /set\s+trusthost/i.test(rawText);
+                },
+                remediation: `config system admin\n  edit "admin"\n    set trusthost1 192.168.1.0 255.255.255.0\n  next\nend`
+            },
+            {
+                id: "cis-1.3",
+                title: "Ensure Central Logging is enabled",
+                description: "Logs should be sent to a central syslog server or FortiAnalyzer to preserve auditable events.",
+                evaluate: (parsedConfig, rawText) => {
+                    return /config\s+log\s+(syslogd|fortianalyzer)\s+setting[\s\S]*?set\s+status\s+enable/im.test(rawText);
+                },
+                remediation: `config log syslogd setting\n  set status enable\n  set server "192.168.1.100"\nend`
+            },
+            {
+                id: "cis-1.4",
+                title: "Ensure Password Policy is Enabled",
+                description: "A strong password policy mitigates the risk of dictionary and brute-force attacks.",
+                evaluate: (parsedConfig, rawText) => {
+                    return /config\s+system\s+password-policy[\s\S]*?set\s+status\s+enable/im.test(rawText);
+                },
+                remediation: `config system password-policy\n  set status enable\n  set minimum-length 14\nend`
+            },
+            {
+                id: "cis-1.5",
+                title: "Modify Default Administration Ports",
+                description: "Changing default management ports (like HTTPS 443 -> 4443) reduces visibility to automated scanners.",
+                evaluate: (parsedConfig) => {
+                    const global = parsedConfig['config system global'];
+                    if (!global) return false;
+                    const sport = global['admin-sport'] || "443";
+                    const port = global['admin-port'] || "80";
+                    return sport !== "443" && port !== "80";
+                },
+                remediation: `config system global\n  set admin-sport 4443\n  set admin-port 8080\nend`
+            },
+            {
+                id: "cis-1.6",
+                title: "Ensure NTP is configured and enabled",
+                description: "Accurate time prevents issues with certificates, log correlation, and scheduled events.",
+                evaluate: (parsedConfig, rawText) => {
+                    return /config\s+system\s+ntp[\s\S]*?set\s+ntpsync\s+enable/im.test(rawText);
+                },
+                remediation: `config system ntp\n  set ntpsync enable\n  set type custom\n  config ntpserver\n    edit 1\n      set server "pool.ntp.org"\n    next\n  end\nend`
+            },
+            {
+                id: "cis-1.7",
+                title: "Ensure USB Auto-Install is Disabled",
+                description: "Attackers with physical access can use a USB drive to load firmware or configurations. This feature must be disabled.",
+                evaluate: (parsedConfig, rawText) => {
+                    const match = /set\s+usb-auto-install\s+enable/im.test(rawText);
+                    return !match;
+                },
+                remediation: `config system auto-install\n  set auto-install disable\nend`
+            },
+            {
+                id: "cis-1.8",
+                title: "Ensure Admin SSH runs on a non-standard port",
+                description: "To avoid simple brute-force scripts hitting port 22.",
+                evaluate: (parsedConfig) => {
+                    const global = parsedConfig['config system global'];
+                    if (!global) return false;
+                    const sshPort = global['admin-ssh-port'] || "22";
+                    return sshPort !== "22";
+                },
+                remediation: `config system global\n  set admin-ssh-port 2222\nend`
+            }
+        ];
+
+        // --- 3. APPLICATION LOGIC ---
+        document.addEventListener('DOMContentLoaded', () => {
+            const dropZone = document.getElementById('drop-zone');
+            const fileInput = document.getElementById('file-input');
+            const resultsSection = document.getElementById('results-section');
+            const scoreValue = document.getElementById('score-value');
+            const scoreTotal = document.getElementById('score-total');
+            const scoreMessage = document.getElementById('score-message');
+            const findingsList = document.getElementById('findings-list');
+            const scoreCircle = document.querySelector('.score-circle');
+            const filterBtns = document.querySelectorAll('.filter-btn');
+            const btnRestart = document.getElementById('btn-restart');
+
+            let allResults = [];
+
+            // UI Listeners
+            ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
+                dropZone.addEventListener(eventName, e => {
+                    e.preventDefault(); e.stopPropagation();
+                }, false);
+            });
+
+            ['dragenter', 'dragover'].forEach(eventName => {
+                dropZone.addEventListener(eventName, () => dropZone.classList.add('drag-active'), false);
+            });
+
+            ['dragleave', 'drop'].forEach(eventName => {
+                dropZone.addEventListener(eventName, () => dropZone.classList.remove('drag-active'), false);
+            });
+
+            dropZone.addEventListener('drop', e => handleFiles(e.dataTransfer.files), false);
+            dropZone.addEventListener('click', () => fileInput.click());
+            fileInput.addEventListener('change', e => {
+                if(e.target.files.length) handleFiles(e.target.files);
+            });
+
+            btnRestart.addEventListener('click', () => {
+                resultsSection.classList.add('hidden');
+                dropZone.classList.remove('hidden');
+                fileInput.value = "";
+            });
+
+            function handleFiles(files) {
+                if (!files.length) return;
+                const file = files[0];
+                const reader = new FileReader();
+                reader.onload = e => evaluateConfig(e.target.result);
+                reader.readAsText(file);
+            }
+
+            function evaluateConfig(rawText) {
+                const parsedConfig = parseFortiOSConfig(rawText);
+                allResults = [];
+                let passed = 0;
+
+                RULES.forEach(rule => {
+                    const isPass = rule.evaluate(parsedConfig, rawText);
+                    if(isPass) passed++;
+                    allResults.push({ ...rule, status: isPass ? 'pass' : 'fail' });
+                });
+
+                renderResults(passed, RULES.length);
+            }
+
+            function renderResults(passed, total) {
+                scoreValue.textContent = passed;
+                scoreTotal.textContent = total;
+                
+                const percentage = (passed / total) * 100;
+                scoreCircle.style.setProperty('--progress', `${percentage}%`);
+                
+                if(percentage === 100) {
+                    scoreMessage.textContent = "Excellent! Perfect alignment with analyzed CIS controls.";
+                    scoreCircle.style.background = `conic-gradient(var(--success) var(--progress, 0%), var(--bg-secondary) 0%)`;
+                } else if (percentage >= 70) {
+                    scoreMessage.textContent = "Good job! A few areas need attention.";
+                    scoreCircle.style.background = `conic-gradient(var(--warning) var(--progress, 0%), var(--bg-secondary) 0%)`;
+                } else {
+                    scoreMessage.textContent = "Significant security gaps identified. Please review findings.";
+                    scoreCircle.style.background = `conic-gradient(var(--danger) var(--progress, 0%), var(--bg-secondary) 0%)`;
+                }
+
+                renderFindings('all');
+                dropZone.classList.add('hidden');
+                resultsSection.classList.remove('hidden');
+            }
+
+            function renderFindings(filter) {
+                findingsList.innerHTML = '';
+                const filtered = allResults.filter(res => filter === 'all' || res.status === filter);
+
+                filtered.forEach(res => {
+                    const findingEl = document.createElement('li');
+                    findingEl.className = `finding-card ${res.status}`;
+                    
+                    let remediationHTML = '';
+                    if(res.status === 'fail' && res.remediation) {
+                        remediationHTML = `
+                            <div class="remediation-box">
+                                <h4>
+                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                        <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
+                                        <line x1="12" y1="9" x2="12" y2="13"/>
+                                        <line x1="12" y1="17" x2="12.01" y2="17"/>
+                                    </svg>
+                                    Recommended Remediation
+                                </h4>
+                                <div class="remediation-code">${escapeHTML(res.remediation)}</div>
+                            </div>`;
+                    }
+
+                    findingEl.innerHTML = `
+                        <div class="finding-header">
+                            <span class="finding-title">${escapeHTML(res.title)}</span>
+                            <span class="status-badge">${res.status.toUpperCase()}</span>
+                        </div>
+                        <div class="finding-desc">${escapeHTML(res.description)}</div>
+                        ${remediationHTML}
+                    `;
+                    findingsList.appendChild(findingEl);
+                });
+            }
+
+            filterBtns.forEach(btn => {
+                btn.addEventListener('click', e => {
+                    filterBtns.forEach(b => b.classList.remove('active'));
+                    e.target.classList.add('active');
+                    renderFindings(e.target.dataset.filter);
+                });
+            });
+
+            function escapeHTML(str) {
+                return str.replace(/[&<>'"]/g, tag => ({
+                    '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;'
+                }[tag]));
+            }
+        });
+    </script>
+</body>
+</html>
