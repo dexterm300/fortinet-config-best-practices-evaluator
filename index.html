@@ -163,6 +163,17 @@
         }
         .pass .status-badge { background: var(--success-bg); color: var(--success); }
         .fail .status-badge { background: var(--danger-bg); color: var(--danger); }
+        .severity-badge {
+            padding: 4px 8px; border-radius: 4px; font-size: 0.7rem;
+            font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em;
+            margin-right: 6px;
+        }
+        .severity-critical { background: rgba(239, 68, 68, 0.15); color: var(--danger); border: 1px solid rgba(239, 68, 68, 0.4); }
+        .severity-high { background: rgba(249, 115, 22, 0.15); color: #fb923c; border: 1px solid rgba(249, 115, 22, 0.4); }
+        .severity-medium { background: rgba(245, 158, 11, 0.15); color: var(--warning); border: 1px solid rgba(245, 158, 11, 0.4); }
+        .severity-low { background: rgba(59, 130, 246, 0.15); color: var(--accent-primary); border: 1px solid rgba(59, 130, 246, 0.4); }
+        .finding-badges { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+        .finding-meta { color: var(--text-secondary); font-size: 0.75rem; margin-top: 0.25rem; font-family: monospace; }
         .finding-desc { color: var(--text-secondary); font-size: 0.95rem; margin-bottom: 1rem; }
 
         .remediation-box {
@@ -172,9 +183,11 @@
         .remediation-box h4 { font-size: 0.875rem; color: var(--warning); margin-bottom: 0.5rem; display: flex; align-items: center; gap: 6px;}
         .remediation-code { font-family: monospace; background: #000; padding: 0.75rem; border-radius: 6px; color: #a78bfa; font-size: 0.85rem; white-space: pre-wrap; margin-top: 0.5rem;}
         footer { margin-top: 3rem; text-align: center; color: var(--text-secondary); font-size: 0.85rem;}
-        .app-controls { text-align: center; margin-top: 2rem; }
-        .btn-restart { background: var(--bg-tertiary); color: var(--text-primary); border: 1px solid var(--border); padding: 0.75rem 1.5rem; border-radius: 8px; font-family: inherit; font-size: 1rem; cursor: pointer; transition: all 0.2s ease;}
-        .btn-restart:hover { background: var(--border); }
+        .app-controls { text-align: center; margin-top: 2rem; display: flex; gap: 0.75rem; justify-content: center; flex-wrap: wrap; }
+        .btn-restart, .btn-export { background: var(--bg-tertiary); color: var(--text-primary); border: 1px solid var(--border); padding: 0.75rem 1.5rem; border-radius: 8px; font-family: inherit; font-size: 1rem; cursor: pointer; transition: all 0.2s ease;}
+        .btn-restart:hover, .btn-export:hover { background: var(--border); }
+        .btn-export { background: transparent; color: var(--accent-primary); border-color: var(--accent-primary); }
+        .btn-export:hover { background: rgba(59, 130, 246, 0.1); }
     </style>
 </head>
 <body>
@@ -208,7 +221,7 @@
                     <div class="score-circle">
                         <span id="score-value">0</span>
                         <span class="score-divider">/</span>
-                        <span id="score-total">8</span>
+                        <span id="score-total">0</span>
                     </div>
                     <div class="score-details">
                         <h3>Compliance Score</h3>
@@ -223,6 +236,7 @@
                             <button class="filter-btn active" data-filter="all">All</button>
                             <button class="filter-btn" data-filter="fail">Gaps</button>
                             <button class="filter-btn" data-filter="pass">Passed</button>
+                            <button class="filter-btn" data-filter="critical">Critical</button>
                         </div>
                     </div>
                     <ul id="findings-list" class="findings-list"></ul>
@@ -230,6 +244,7 @@
                 
                 <div class="app-controls">
                     <button class="btn-restart" id="btn-restart">Evaluate Another Config</button>
+                    <button class="btn-export" id="btn-export-json">Export JSON</button>
                 </div>
             </section>
         </main>
@@ -241,124 +256,343 @@
     
     <script>
         // --- 1. PARSER ENGINE ---
-        function parseFortiOSConfig(rawText) {
-            const configData = {};
-            let currentContext = null;
-            const lines = rawText.split(/\r?\n/);
-            
-            for(let i=0; i<lines.length; i++) {
-                const line = lines[i].trim();
-                
-                if(line.startsWith("config ")) {
-                    currentContext = line;
-                    if(!configData[currentContext]) {
-                        configData[currentContext] = {};
-                    }
-                } 
-                else if (line === "end") {
-                    currentContext = null;
-                }
-                else if (line.startsWith("set ") && currentContext) {
-                    const parts = line.split(" ");
-                    if (parts.length >= 3) {
-                        const key = parts[1];
-                        let value = parts.slice(2).join(" ");
-                        value = value.replace(/^"/, '').replace(/"$/, '');
-                        configData[currentContext][key] = value;
-                    }
+        // Parses FortiOS CLI config into a nested object.
+        // Structure:
+        //   sections: { "config system global": { settings: {key: value}, edits: {} } }
+        //   Edit blocks produce: edits: { "<name>": { settings: {}, edits: {}, sections: {} } }
+        // Also preserves a flat `settings` map on top-level `config system X` sections for
+        // easy legacy access, and keeps the raw text for regex-based checks.
+
+        function stripInlineComment(line) {
+            // Strip trailing "# ..." comments but preserve # inside quoted strings.
+            let inQuote = false;
+            for (let i = 0; i < line.length; i++) {
+                const c = line[i];
+                if (c === '"') inQuote = !inQuote;
+                else if (c === '#' && !inQuote) return line.slice(0, i).trimEnd();
+            }
+            return line;
+        }
+
+        function tokenizeSetLine(rest) {
+            // Tokenize "key value1 value2 \"quoted value\"" respecting quotes.
+            const tokens = [];
+            let buf = '';
+            let inQuote = false;
+            for (let i = 0; i < rest.length; i++) {
+                const c = rest[i];
+                if (c === '"') { inQuote = !inQuote; continue; }
+                if (!inQuote && /\s/.test(c)) {
+                    if (buf.length) { tokens.push(buf); buf = ''; }
+                } else {
+                    buf += c;
                 }
             }
-            return configData;
+            if (buf.length) tokens.push(buf);
+            return tokens;
+        }
+
+        function parseFortiOSConfig(rawText) {
+            const root = { sections: {} };
+            // Stack entries are nodes that accept `set`/`edit`/`config` children.
+            const stack = [{ node: root, type: 'root' }];
+            const lines = rawText.split(/\r?\n/);
+
+            for (let i = 0; i < lines.length; i++) {
+                const line = stripInlineComment(lines[i]).trim();
+                if (!line || line.startsWith('#')) continue;
+
+                if (line.startsWith('config ')) {
+                    const header = line;
+                    const parent = stack[stack.length - 1].node;
+                    if (!parent.sections) parent.sections = {};
+                    if (!parent.sections[header]) {
+                        parent.sections[header] = { settings: {}, edits: {}, sections: {} };
+                    }
+                    stack.push({ node: parent.sections[header], type: 'config' });
+                } else if (line === 'end') {
+                    // Pop back to the nearest enclosing config (or root).
+                    while (stack.length > 1 && stack[stack.length - 1].type !== 'config') stack.pop();
+                    if (stack.length > 1) stack.pop();
+                } else if (line.startsWith('edit ')) {
+                    const parent = stack[stack.length - 1].node;
+                    const name = tokenizeSetLine(line.slice(5))[0] || '';
+                    if (!parent.edits) parent.edits = {};
+                    if (!parent.edits[name]) {
+                        parent.edits[name] = { settings: {}, edits: {}, sections: {} };
+                    }
+                    stack.push({ node: parent.edits[name], type: 'edit' });
+                } else if (line === 'next') {
+                    if (stack.length > 1 && stack[stack.length - 1].type === 'edit') stack.pop();
+                } else if (line.startsWith('set ')) {
+                    const parent = stack[stack.length - 1].node;
+                    const tokens = tokenizeSetLine(line.slice(4));
+                    if (tokens.length >= 2) {
+                        const key = tokens[0];
+                        const value = tokens.slice(1).join(' ');
+                        if (!parent.settings) parent.settings = {};
+                        parent.settings[key] = value;
+                    }
+                } else if (line.startsWith('unset ')) {
+                    const parent = stack[stack.length - 1].node;
+                    const tokens = tokenizeSetLine(line.slice(6));
+                    if (tokens.length >= 1 && parent.settings) delete parent.settings[tokens[0]];
+                }
+            }
+
+            // Legacy compatibility: expose top-level sections as keys with direct settings
+            // access so existing callers like parsedConfig['config system global']['admintimeout'] work.
+            const legacy = {};
+            for (const [header, section] of Object.entries(root.sections)) {
+                legacy[header] = section.settings || {};
+            }
+            return { tree: root, legacy };
+        }
+
+        // --- 1b. HELPERS for rule definitions ---
+        function getSetting(parsed, sectionHeader, key) {
+            const s = parsed.tree.sections[sectionHeader];
+            return s && s.settings ? s.settings[key] : undefined;
+        }
+
+        function hasEditBlock(parsed, sectionHeader, filterFn) {
+            const s = parsed.tree.sections[sectionHeader];
+            if (!s || !s.edits) return false;
+            return Object.entries(s.edits).some(([name, node]) => filterFn(name, node.settings || {}, node));
+        }
+
+        function allEditBlocks(parsed, sectionHeader, predicate) {
+            const s = parsed.tree.sections[sectionHeader];
+            if (!s || !s.edits) return true; // vacuously true
+            const entries = Object.entries(s.edits);
+            if (!entries.length) return true;
+            return entries.every(([name, node]) => predicate(name, node.settings || {}, node));
         }
 
         // --- 2. CIS BENCHMARK KNOWLEDGE BASE ---
+        // Each rule is a declarative object with metadata + an evaluator. To add a rule,
+        // append an entry below — no other code changes required.
+        //
+        // Fields:
+        //   id          — stable identifier (used in JSON export)
+        //   title       — short human-readable headline
+        //   description — explanation / rationale
+        //   severity    — 'critical' | 'high' | 'medium' | 'low'
+        //   category    — grouping (Access Control, Logging, Hardening, Network, Policy)
+        //   evaluate    — (parsedConfig, rawText) => boolean | { pass, detail? }
+        //                 parsedConfig has { tree, legacy }. Prefer tree helpers for new rules.
+        //   remediation — CLI snippet shown on failure
+
+        // Precompiled regexes (hoisted so they're compiled once, not per file).
+        const RX_TRUSTHOST = /^\s*set\s+trusthost\d*\s+/im;
+        const RX_CENTRAL_LOG = /config\s+log\s+(?:syslogd|fortianalyzer)\s+setting[\s\S]*?set\s+status\s+enable/im;
+        const RX_PASSWORD_POLICY = /config\s+system\s+password-policy[\s\S]*?set\s+status\s+enable/im;
+        const RX_NTP_ENABLED = /config\s+system\s+ntp[\s\S]*?set\s+ntpsync\s+enable/im;
+        const RX_USB_AUTOINSTALL = /^\s*set\s+usb-auto-install\s+enable/im;
+
+        // Interfaces that should never expose HTTP/Telnet management.
+        const INSECURE_MGMT = ['http', 'telnet'];
+
         const RULES = [
             {
                 id: "cis-1.1",
-                title: "Ensure Admin Idle Timeout is configured to 5 minutes or less",
-                description: "It is recommended that the admin idle timeout is set to 5 minutes to prevent unauthorized access from an abandoned active session.",
-                evaluate: (parsedConfig) => {
-                    const global = parsedConfig['config system global'];
-                    if (!global || !global['admintimeout']) return false;
-                    const timeout = parseInt(global['admintimeout'], 10);
-                    return timeout <= 5;
+                title: "Admin idle timeout should be 5 minutes or less",
+                description: "Limits exposure from abandoned admin sessions on the console/GUI.",
+                severity: "high",
+                category: "Access Control",
+                evaluate: (p) => {
+                    const v = getSetting(p, 'config system global', 'admintimeout');
+                    if (v === undefined) return false;
+                    const n = parseInt(v, 10);
+                    return Number.isFinite(n) && n <= 5;
                 },
                 remediation: `config system global\n  set admintimeout 5\nend`
             },
             {
                 id: "cis-1.2",
-                title: "Ensure Trusted Hosts are configured for administrators",
-                description: "By default, the admin account can log in from any IP. It should be restricted using trusthost configurations.",
-                evaluate: (parsedConfig, rawText) => {
-                    return /set\s+trusthost/i.test(rawText);
-                },
+                title: "Trusted hosts configured for administrators",
+                description: "Restricts admin login source IPs — without this, the admin account is reachable from any routable IP.",
+                severity: "critical",
+                category: "Access Control",
+                evaluate: (p, raw) => RX_TRUSTHOST.test(raw),
                 remediation: `config system admin\n  edit "admin"\n    set trusthost1 192.168.1.0 255.255.255.0\n  next\nend`
             },
             {
                 id: "cis-1.3",
-                title: "Ensure Central Logging is enabled",
-                description: "Logs should be sent to a central syslog server or FortiAnalyzer to preserve auditable events.",
-                evaluate: (parsedConfig, rawText) => {
-                    return /config\s+log\s+(syslogd|fortianalyzer)\s+setting[\s\S]*?set\s+status\s+enable/im.test(rawText);
-                },
+                title: "Central logging enabled",
+                description: "Syslog or FortiAnalyzer preserves auditable events outside the appliance.",
+                severity: "high",
+                category: "Logging",
+                evaluate: (p, raw) => RX_CENTRAL_LOG.test(raw),
                 remediation: `config log syslogd setting\n  set status enable\n  set server "192.168.1.100"\nend`
             },
             {
                 id: "cis-1.4",
-                title: "Ensure Password Policy is Enabled",
-                description: "A strong password policy mitigates the risk of dictionary and brute-force attacks.",
-                evaluate: (parsedConfig, rawText) => {
-                    return /config\s+system\s+password-policy[\s\S]*?set\s+status\s+enable/im.test(rawText);
-                },
+                title: "Password policy enabled",
+                description: "Mitigates dictionary and brute-force attacks against local accounts.",
+                severity: "high",
+                category: "Access Control",
+                evaluate: (p, raw) => RX_PASSWORD_POLICY.test(raw),
                 remediation: `config system password-policy\n  set status enable\n  set minimum-length 14\nend`
             },
             {
                 id: "cis-1.5",
-                title: "Modify Default Administration Ports",
-                description: "Changing default management ports (like HTTPS 443 -> 4443) reduces visibility to automated scanners.",
-                evaluate: (parsedConfig) => {
-                    const global = parsedConfig['config system global'];
-                    if (!global) return false;
-                    const sport = global['admin-sport'] || "443";
-                    const port = global['admin-port'] || "80";
-                    return sport !== "443" && port !== "80";
+                title: "Default admin web ports changed",
+                description: "Moving HTTPS admin off 443 (or HTTP admin off 80) reduces visibility to automated scanners.",
+                severity: "low",
+                category: "Hardening",
+                evaluate: (p) => {
+                    // Either non-default is sufficient. Previously this required BOTH to change,
+                    // which was both wrong and nearly impossible to pass.
+                    const sport = getSetting(p, 'config system global', 'admin-sport') || '443';
+                    const port = getSetting(p, 'config system global', 'admin-port') || '80';
+                    return sport !== '443' || port !== '80';
                 },
                 remediation: `config system global\n  set admin-sport 4443\n  set admin-port 8080\nend`
             },
             {
                 id: "cis-1.6",
-                title: "Ensure NTP is configured and enabled",
-                description: "Accurate time prevents issues with certificates, log correlation, and scheduled events.",
-                evaluate: (parsedConfig, rawText) => {
-                    return /config\s+system\s+ntp[\s\S]*?set\s+ntpsync\s+enable/im.test(rawText);
-                },
+                title: "NTP configured and enabled",
+                description: "Accurate time is required for cert validation, log correlation, and scheduled events.",
+                severity: "medium",
+                category: "Hardening",
+                evaluate: (p, raw) => RX_NTP_ENABLED.test(raw),
                 remediation: `config system ntp\n  set ntpsync enable\n  set type custom\n  config ntpserver\n    edit 1\n      set server "pool.ntp.org"\n    next\n  end\nend`
             },
             {
                 id: "cis-1.7",
-                title: "Ensure USB Auto-Install is Disabled",
-                description: "Attackers with physical access can use a USB drive to load firmware or configurations. This feature must be disabled.",
-                evaluate: (parsedConfig, rawText) => {
-                    const match = /set\s+usb-auto-install\s+enable/im.test(rawText);
-                    return !match;
-                },
+                title: "USB auto-install disabled",
+                description: "Prevents firmware/config loading by anyone with physical access.",
+                severity: "medium",
+                category: "Hardening",
+                evaluate: (p, raw) => !RX_USB_AUTOINSTALL.test(raw),
                 remediation: `config system auto-install\n  set auto-install disable\nend`
             },
             {
                 id: "cis-1.8",
-                title: "Ensure Admin SSH runs on a non-standard port",
-                description: "To avoid simple brute-force scripts hitting port 22.",
-                evaluate: (parsedConfig) => {
-                    const global = parsedConfig['config system global'];
-                    if (!global) return false;
-                    const sshPort = global['admin-ssh-port'] || "22";
-                    return sshPort !== "22";
-                },
+                title: "Admin SSH on non-standard port",
+                description: "Reduces trivial scanner/brute-force hits on TCP/22.",
+                severity: "low",
+                category: "Hardening",
+                evaluate: (p) => (getSetting(p, 'config system global', 'admin-ssh-port') || '22') !== '22',
                 remediation: `config system global\n  set admin-ssh-port 2222\nend`
+            },
+            // --- Rules added from sample-config observations ---
+            {
+                id: "ftnt-2.1",
+                title: "Admin lockout threshold configured",
+                description: "A zero or missing lockout threshold leaves local admin open to unlimited brute-force attempts.",
+                severity: "critical",
+                category: "Access Control",
+                evaluate: (p) => {
+                    const v = getSetting(p, 'config system global', 'admin-lockout-threshold');
+                    if (v === undefined) return false;
+                    const n = parseInt(v, 10);
+                    return Number.isFinite(n) && n > 0;
+                },
+                remediation: `config system global\n  set admin-lockout-threshold 3\n  set admin-lockout-duration 60\nend`
+            },
+            {
+                id: "ftnt-2.2",
+                title: "SSHv1 disabled",
+                description: "SSHv1 has known cryptographic weaknesses and must not be accepted.",
+                severity: "critical",
+                category: "Hardening",
+                evaluate: (p) => {
+                    const v = getSetting(p, 'config system global', 'admin-ssh-v1');
+                    return v === undefined || v === 'disable';
+                },
+                remediation: `config system global\n  set admin-ssh-v1 disable\nend`
+            },
+            {
+                id: "ftnt-2.3",
+                title: "Admin maintainer account disabled",
+                description: "The 'maintainer' console account allows password reset via physical access and should be disabled.",
+                severity: "high",
+                category: "Access Control",
+                evaluate: (p) => {
+                    const v = getSetting(p, 'config system global', 'admin-maintainer');
+                    return v === 'disable';
+                },
+                remediation: `config system global\n  set admin-maintainer disable\nend`
+            },
+            {
+                id: "ftnt-2.4",
+                title: "Pre-login banner enabled",
+                description: "A legal warning banner is required in many compliance regimes before authentication.",
+                severity: "low",
+                category: "Hardening",
+                evaluate: (p) => getSetting(p, 'config system global', 'pre-login-banner') === 'enable',
+                remediation: `config system global\n  set pre-login-banner enable\nend`
+            },
+            {
+                id: "ftnt-3.1",
+                title: "No HTTP/Telnet management on interfaces",
+                description: "Insecure management protocols (HTTP, Telnet) must not be allowed on any interface, especially WAN.",
+                severity: "critical",
+                category: "Network",
+                evaluate: (p) => {
+                    return allEditBlocks(p, 'config system interface', (_name, settings) => {
+                        const access = (settings['allowaccess'] || '').toLowerCase().split(/\s+/);
+                        return !INSECURE_MGMT.some(proto => access.includes(proto));
+                    });
+                },
+                remediation: `config system interface\n  edit "wan1"\n    set allowaccess ping https ssh\n  next\nend`
+            },
+            {
+                id: "ftnt-4.1",
+                title: "No overly permissive 'all-to-all' firewall policies",
+                description: "Policies with srcaddr=all AND dstaddr=all AND service=ALL permit unrestricted traffic.",
+                severity: "critical",
+                category: "Policy",
+                evaluate: (p) => {
+                    return allEditBlocks(p, 'config firewall policy', (_id, s) => {
+                        const src = (s['srcaddr'] || '').toLowerCase();
+                        const dst = (s['dstaddr'] || '').toLowerCase();
+                        const svc = (s['service'] || '').toLowerCase();
+                        const action = (s['action'] || 'accept').toLowerCase();
+                        if (action !== 'accept') return true;
+                        return !(src === 'all' && dst === 'all' && (svc === 'all' || svc === ''));
+                    });
+                },
+                remediation: `# Restrict src/dst/service on each accept policy; avoid srcaddr/dstaddr "all" with service "ALL".`
+            },
+            {
+                id: "ftnt-4.2",
+                title: "Logging enabled on all accept policies",
+                description: "Accept policies with logging disabled leave blind spots in audit trails.",
+                severity: "high",
+                category: "Logging",
+                evaluate: (p) => {
+                    return allEditBlocks(p, 'config firewall policy', (_id, s) => {
+                        const action = (s['action'] || 'accept').toLowerCase();
+                        if (action !== 'accept') return true;
+                        const lt = (s['logtraffic'] || '').toLowerCase();
+                        return lt === 'all' || lt === 'utm';
+                    });
+                },
+                remediation: `config firewall policy\n  edit <id>\n    set logtraffic all\n  next\nend`
+            },
+            {
+                id: "ftnt-5.1",
+                title: "Implicit-deny traffic is logged",
+                description: "Logging denied traffic is essential for detecting scans and policy gaps.",
+                severity: "medium",
+                category: "Logging",
+                evaluate: (p) => {
+                    const v = getSetting(p, 'config log setting', 'fwpolicy-implicit-deny');
+                    return v === undefined || v === 'enable';
+                },
+                remediation: `config log setting\n  set fwpolicy-implicit-deny enable\nend`
             }
         ];
 
         // --- 3. APPLICATION LOGIC ---
+        // Expose parser + rules for unit tests (see tests/test.html).
+        if (typeof window !== 'undefined') {
+            window.FortiEval = { parseFortiOSConfig, RULES, getSetting, hasEditBlock, allEditBlocks };
+        }
+
         document.addEventListener('DOMContentLoaded', () => {
             const dropZone = document.getElementById('drop-zone');
             const fileInput = document.getElementById('file-input');
@@ -370,8 +604,10 @@
             const scoreCircle = document.querySelector('.score-circle');
             const filterBtns = document.querySelectorAll('.filter-btn');
             const btnRestart = document.getElementById('btn-restart');
+            const btnExportJson = document.getElementById('btn-export-json');
 
             let allResults = [];
+            let lastFileName = 'fortinet-config';
 
             // UI Listeners
             ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
@@ -403,8 +639,12 @@
             function handleFiles(files) {
                 if (!files.length) return;
                 const file = files[0];
+                lastFileName = file.name.replace(/\.[^.]+$/, '') || 'fortinet-config';
                 const reader = new FileReader();
                 reader.onload = e => evaluateConfig(e.target.result);
+                reader.onerror = () => {
+                    scoreMessage.textContent = "Could not read the selected file.";
+                };
                 reader.readAsText(file);
             }
 
@@ -413,11 +653,25 @@
                 allResults = [];
                 let passed = 0;
 
-                RULES.forEach(rule => {
-                    const isPass = rule.evaluate(parsedConfig, rawText);
-                    if(isPass) passed++;
-                    allResults.push({ ...rule, status: isPass ? 'pass' : 'fail' });
-                });
+                for (const rule of RULES) {
+                    let isPass = false;
+                    try {
+                        isPass = !!rule.evaluate(parsedConfig, rawText);
+                    } catch (err) {
+                        console.error(`Rule ${rule.id} threw:`, err);
+                        isPass = false;
+                    }
+                    if (isPass) passed++;
+                    allResults.push({
+                        id: rule.id,
+                        title: rule.title,
+                        description: rule.description,
+                        severity: rule.severity || 'medium',
+                        category: rule.category || 'General',
+                        remediation: rule.remediation,
+                        status: isPass ? 'pass' : 'fail'
+                    });
+                }
 
                 renderResults(passed, RULES.length);
             }
@@ -445,16 +699,33 @@
                 resultsSection.classList.remove('hidden');
             }
 
+            // Sort failures first, then by severity (critical → low).
+            const SEVERITY_ORDER = { critical: 0, high: 1, medium: 2, low: 3 };
+            function sortResults(rs) {
+                return rs.slice().sort((a, b) => {
+                    if (a.status !== b.status) return a.status === 'fail' ? -1 : 1;
+                    return (SEVERITY_ORDER[a.severity] ?? 9) - (SEVERITY_ORDER[b.severity] ?? 9);
+                });
+            }
+
+            function filterResults(filter) {
+                if (filter === 'all') return allResults;
+                if (filter === 'pass' || filter === 'fail') return allResults.filter(r => r.status === filter);
+                // Severity filter: show only failing findings of the given severity.
+                return allResults.filter(r => r.status === 'fail' && r.severity === filter);
+            }
+
             function renderFindings(filter) {
                 findingsList.innerHTML = '';
-                const filtered = allResults.filter(res => filter === 'all' || res.status === filter);
+                const filtered = sortResults(filterResults(filter));
+                const frag = document.createDocumentFragment();
 
                 filtered.forEach(res => {
                     const findingEl = document.createElement('li');
                     findingEl.className = `finding-card ${res.status}`;
-                    
+
                     let remediationHTML = '';
-                    if(res.status === 'fail' && res.remediation) {
+                    if (res.status === 'fail' && res.remediation) {
                         remediationHTML = `
                             <div class="remediation-box">
                                 <h4>
@@ -469,28 +740,59 @@
                             </div>`;
                     }
 
+                    const severityBadge = res.status === 'fail'
+                        ? `<span class="severity-badge severity-${res.severity}">${res.severity}</span>`
+                        : '';
+
                     findingEl.innerHTML = `
                         <div class="finding-header">
                             <span class="finding-title">${escapeHTML(res.title)}</span>
-                            <span class="status-badge">${res.status.toUpperCase()}</span>
+                            <div class="finding-badges">
+                                ${severityBadge}
+                                <span class="status-badge">${res.status.toUpperCase()}</span>
+                            </div>
                         </div>
+                        <div class="finding-meta">${escapeHTML(res.id)} · ${escapeHTML(res.category)}</div>
                         <div class="finding-desc">${escapeHTML(res.description)}</div>
                         ${remediationHTML}
                     `;
-                    findingsList.appendChild(findingEl);
+                    frag.appendChild(findingEl);
                 });
+
+                findingsList.appendChild(frag);
             }
 
             filterBtns.forEach(btn => {
                 btn.addEventListener('click', e => {
                     filterBtns.forEach(b => b.classList.remove('active'));
-                    e.target.classList.add('active');
-                    renderFindings(e.target.dataset.filter);
+                    e.currentTarget.classList.add('active');
+                    renderFindings(e.currentTarget.dataset.filter);
                 });
             });
 
+            btnExportJson.addEventListener('click', () => {
+                if (!allResults.length) return;
+                const report = {
+                    tool: 'fortinet-config-best-practices-evaluator',
+                    generated_at: new Date().toISOString(),
+                    total: allResults.length,
+                    passed: allResults.filter(r => r.status === 'pass').length,
+                    failed: allResults.filter(r => r.status === 'fail').length,
+                    results: allResults
+                };
+                const blob = new Blob([JSON.stringify(report, null, 2)], { type: 'application/json' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `${lastFileName}-evaluation.json`;
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                URL.revokeObjectURL(url);
+            });
+
             function escapeHTML(str) {
-                return str.replace(/[&<>'"]/g, tag => ({
+                return String(str).replace(/[&<>'"]/g, tag => ({
                     '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;'
                 }[tag]));
             }
