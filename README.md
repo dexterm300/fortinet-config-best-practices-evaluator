@@ -49,11 +49,37 @@ Wait! There is no installation required. Because this is a static client-side we
 └── README.md         # Project documentation (You are here)
 ```
 
+## 🧪 Running Tests
+
+A zero-dependency Node test runner covers the parser and every rule:
+
+```bash
+node tests/run-tests.js
+```
+
+## 🧩 Adding a Rule
+
+Rules live in the `RULES` array inside `index.html` and are fully declarative:
+
+```js
+{
+    id: "ftnt-x.y",
+    title: "Short headline",
+    description: "Why this matters.",
+    severity: "critical" | "high" | "medium" | "low",
+    category: "Access Control" | "Logging" | "Hardening" | "Network" | "Policy",
+    evaluate: (parsedConfig, rawText) => true,  // true = pass
+    remediation: `config ...\n  set ...\nend`
+}
+```
+
+Use `getSetting(parsed, 'config system global', 'key')` and `allEditBlocks(parsed, header, predicate)` helpers for clean access to the parsed tree.
+
 ## 📝 Planned Improvements
 
 - Add support for evaluating FortiOS 7.2/8.0 specific context changes.
 - Add toggleable standard targets (e.g., PCI-DSS vs CIS vs Custom).
-- Export evaluation results to PDF/CSV.
+- Export evaluation results to PDF/CSV (JSON export is already available).
 
 ## 📜 License
 
